@@ -1,8 +1,8 @@
 obtain steering vector from GoEmotion --> generation&classification test --> benchmark to see if improve performance
 
-1. `python src/data-loader-emo.py --emotion anger --split train`
+1. `python src/data_loader_emo.py --emotion anger --split train`
 
-2. `python src/recorder.py --emotion anger --split train --model_name gpt2 --layer -1 --batch_size 2 --device gpu`
+2. `python src/recorder.py --emotion anger --split train --model_name gpt2 --layer -1 --batch_size 2 --device cuda`
 
 3. `python src/analyzer.py --emotion anger --split train --layer -1 --top_k 50`
 
