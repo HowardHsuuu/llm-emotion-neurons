@@ -1,60 +1,76 @@
-import os
 import argparse
 import numpy as np
+from pathlib import Path
 
-def build_steering_vector(emotion: str, split: str, layer: int, base_dir: str, vector_type: str, top_k: int):
-    hs_dir = os.path.join(base_dir, emotion, "hidden_states")
-    emo_layers = os.path.join(hs_dir, f"{split}_emotion_layers.npy")
-    neu_layers = os.path.join(hs_dir, f"{split}_neutral_layers.npy")
-    emo_all = np.load(emo_layers)  # [L, N_e, D]
-    neu_all = np.load(neu_layers)  # [L, N_n, D]
-    L, N_e, D = emo_all.shape
-    emo = emo_all[layer-1]  # [N_e, D]
-    neu = neu_all[layer-1]  # [N_n, D]
-    diff = emo.mean(axis=0) - neu.mean(axis=0)
+def compute_diff_matrix(emo_all: np.ndarray, neu_all: np.ndarray, top_k: int = None, alpha: float = 1.0) -> np.ndarray:
+    emo_mean = emo_all.mean(axis=1)  # [L, D]
+    neu_mean = neu_all.mean(axis=1)  # [L, D]
+    diff = emo_mean - neu_mean       # [L, D]
 
-    if vector_type == "top_k":
-        idxs = np.argsort(np.abs(diff))[-top_k:]
-        vec = np.zeros_like(diff)
-        vec[idxs] = diff[idxs]
-    else:
-        vec = diff.copy()
+    if top_k is None:
+        return diff * alpha
 
-    out_dir = os.path.join(base_dir, emotion, "steering_vector")
-    os.makedirs(out_dir, exist_ok=True)
-    vec_path = os.path.join(
-        out_dir,
-        f"{split}_layer{layer}_{vector_type}_k{top_k}.npy"
-    )
-    np.save(vec_path, vec)
-    print(f"Steering vector saved to {vec_path}")
-    print(f"  norm: {np.linalg.norm(vec):.4f}, nonzeros: {(vec!=0).sum()}/{D}")
-    return vec_path
+    diff_top = np.zeros_like(diff)
+    num_layers, hidden_size = diff.shape
+    for layer_idx in range(num_layers):
+        layer_diff = diff[layer_idx]
+        top_indices = np.argsort(np.abs(layer_diff))[-top_k:]
+        mask = np.zeros(hidden_size, dtype=bool)
+        mask[top_indices] = True
+        diff_top[layer_idx] = layer_diff * mask
 
-if __name__ == "__main__":
+    return diff_top * alpha
+
+
+def main():
     parser = argparse.ArgumentParser(
-        description="Build emotion steering vector from multi-layer hidden states"
+        description="Generate steering diff matrix for all layers at once"
     )
-    parser.add_argument("--emotion",     type=str, required=True,
-                        help="Emotion (e.g. anger, joy)")
-    parser.add_argument("--split",       type=str, default="train",
-                        help="split: train/validation/test")
-    parser.add_argument("--layer",       type=int, required=True,
-                        help="steering layer index (1-based)")
-    parser.add_argument("--base_dir",    type=str, default="data/processed",
-                        help="base directory for data")
-    parser.add_argument("--vector_type", type=str, default="mean",
-                        choices=["mean","top_k"],
-                        help="steering vector type: mean or top_k")
-    parser.add_argument("--top_k",       type=int, default=50,
-                        help="number of top neurons to output")
+    parser.add_argument("--emotion",    type=str, required=True,
+                        help="Emotion name (e.g., anger, joy)")
+    parser.add_argument("--split",      type=str, required=True,
+                        help="Data split (train, val, test)")
+    parser.add_argument("--vector_type", choices=["mean", "top_k"], default="top_k",
+                        help="Full mean diff or only top_k components")
+    parser.add_argument("--top_k",      type=int, default=50,
+                        help="Number of top-K neurons to keep per layer when vector_type=top_k")
+    parser.add_argument("--alpha",      type=float, default=1.0,
+                        help="Scaling factor for diff matrix")
+    parser.add_argument("--layers",     type=int, nargs='+', default=None,
+                        help="List of 1-based layer indices to apply top_k or mean; other layers zeroed")
+    parser.add_argument("--data_dir",   type=str, default="data/processed",
+                        help="Root directory for processed data")
     args = parser.parse_args()
 
-    build_steering_vector(
-        emotion=args.emotion,
-        split=args.split,
-        layer=args.layer,
-        base_dir=args.base_dir,
-        vector_type=args.vector_type,
-        top_k=args.top_k
-    )
+    emotion_dir = Path(args.data_dir) / args.emotion
+    emo_path = emotion_dir / "hidden_states" / f"{args.split}_emotion_layers.npy"
+    neu_path = emotion_dir / "hidden_states" / f"{args.split}_neutral_layers.npy"
+    emo_all = np.load(emo_path)
+    neu_all = np.load(neu_path)
+
+    top_k = None if args.vector_type == "mean" else args.top_k
+    diff_matrix = compute_diff_matrix(emo_all, neu_all, top_k=top_k, alpha=args.alpha)
+
+    if args.layers is not None:
+        zero_idxs = [l - 1 for l in args.layers]
+        mask_matrix = np.zeros_like(diff_matrix)
+        for idx in zero_idxs:
+            mask_matrix[idx] = diff_matrix[idx]
+        diff_matrix = mask_matrix
+
+    out_dir = emotion_dir / "steering_vector"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.layers is None:
+        fname = f"{args.split}_{args.vector_type}_diffmatrix.npy"
+    else:
+        layers_str = "-".join(str(l) for l in args.layers)
+        fname = f"{args.split}_{args.vector_type}_layers{layers_str}_diffmatrix.npy"
+    out_path = out_dir / fname
+    np.save(out_path, diff_matrix)
+
+    nonzeros = int(np.count_nonzero(diff_matrix))
+    print(f"Saved diff matrix to {out_path}")
+    print(f"Matrix shape: {diff_matrix.shape}, non-zero elements: {nonzeros}")
+
+if __name__ == "__main__":
+    main()
