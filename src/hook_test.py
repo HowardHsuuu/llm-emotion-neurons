@@ -1,48 +1,81 @@
-# src/hook_test.py
-
 import torch
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import matplotlib.pyplot as plt
 
-def capture_hidden_state(model, tokenizer, prompt, layer_idx, device):
+def capture_all_hidden_states(model, tokenizer, prompt, device):
     inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
-    hs = outputs.hidden_states[layer_idx]  # [1, seq_len, hidden_dim]
+    hidden_states = outputs.hidden_states
     mask = inputs['attention_mask']
     length = mask.sum(dim=1).item()
-    return hs[0, length-1, :].cpu()
+    hs = []
+    for i in range(1, len(hidden_states)):
+        layer_hs = hidden_states[i][0, length-1, :].cpu()
+        hs.append(layer_hs)
+    return torch.stack(hs)  # [num_layers, hidden_dim]
 
-def add_hook(model, layer_idx, steering_vector, device):
-    try:
-        block = model.model.layers[layer_idx]
-    except AttributeError:
-        block = model.transformer.h[layer_idx]
-    def hook(module, input, output):
-        hidden = output[0] if isinstance(output, tuple) else output
-        hidden[:, -1, :] += steering_vector.to(device)
-        return (hidden, output[1]) if isinstance(output, tuple) else hidden
-    return block.register_forward_hook(hook)
 
-if __name__ == "__main__":
-    model_name = "gpt2"
-    layer_idx  = -1
-    prompt     = "Testing injection works."
-    device     = torch.device("cpu")
+def add_hooks_all(model, steering_matrix, device):
+    handles = []
+    num_layers = steering_matrix.shape[0]
+    for layer_idx in range(num_layers):
+        try:
+            block = model.model.layers[layer_idx]
+        except AttributeError:
+            block = model.transformer.h[layer_idx]
+        vec = steering_matrix[layer_idx].to(device)
+        def make_hook(vec):
+            def hook(module, input, output):
+                if isinstance(output, tuple):
+                    hidden = output[0]
+                else:
+                    hidden = output
+                hidden[:, -1, :] = hidden[:, -1, :] + vec
+                if isinstance(output, tuple):
+                    return (hidden, *output[1:])
+                else:
+                    return hidden
+            return hook
+        handle = block.register_forward_hook(make_hook(vec))
+        handles.append(handle)
+    return handles
+
+
+def main():
+    model_name = "meta-llama/Llama-3.2-3B-Instruct"
+    prompt = "Testing injection works across all layers."
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         model_name, output_hidden_states=True
     ).to(device).eval()
-    vec_path     = "data/processed/anger/steering_vector/train_layer-1_mean_k50.npy"
-    steering_vec = torch.from_numpy(np.load(vec_path)).float()
-    h_before = capture_hidden_state(model, tokenizer, prompt, layer_idx, device)
-    handle = add_hook(model, layer_idx, steering_vec, device)
-    h_after = capture_hidden_state(model, tokenizer, prompt, layer_idx, device)
-    handle.remove()
-    diff = h_after - h_before
-    cos_sim = torch.nn.functional.cosine_similarity(diff, steering_vec.cpu(), dim=0)
-    print(f"Cosine similarity between diff and steering vector: {cos_sim.item():.4f}")
-    print("First 10 dims of diff:         ", diff[:10].numpy())
-    print("First 10 dims of steering_vec:", steering_vec.cpu()[:10].numpy())
+    vec_path = "data/processed/anger/steering_vector/train_top_k_diffmatrix.npy"
+    steering_matrix = torch.from_numpy(np.load(vec_path)).float()
+    h_before = capture_all_hidden_states(model, tokenizer, prompt, device)
+    handles = add_hooks_all(model, steering_matrix, device)
+    h_after = capture_all_hidden_states(model, tokenizer, prompt, device)
+    for handle in handles:
+        handle.remove()
+
+    diff = h_after - h_before  # [num_layers, hidden_dim]
+    cos_sim_per_layer = torch.nn.functional.cosine_similarity(
+        diff, steering_matrix.cpu(), dim=1
+    )
+
+    for idx, cs in enumerate(cos_sim_per_layer):
+        print(f"Layer {idx:2d} cosine similarity: {cs.item():.4f}")
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(list(range(len(cos_sim_per_layer))), cos_sim_per_layer.numpy(), marker='o')
+    plt.title('Cosine Similarity per Layer')
+    plt.xlabel('Layer Index')
+    plt.ylabel('Cosine Similarity')
+    plt.grid(True)
+    plt.show()
+
+if __name__ == '__main__':
+    main()

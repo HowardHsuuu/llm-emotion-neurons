@@ -19,7 +19,7 @@ def compute_diff_and_pvalues(emo_all, neu_all):
         pval_matrix[i] = p_vals
     return diff_matrix, pval_matrix
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="Global analysis of neuron activation differences with heatmap and scatter"
     )
@@ -83,3 +83,6 @@ if __name__ == "__main__":
     csv_name = os.path.join(out_dir, f"{args.split}_global_rank.csv")
     df_sorted.to_csv(csv_name, index=False)
     print(f"Saved global ranking CSV to {csv_name}")
+
+if __name__ == '__main__':
+    main()

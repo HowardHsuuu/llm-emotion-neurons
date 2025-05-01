@@ -26,7 +26,7 @@ def save_lists(texts, path):
         for line in texts:
             f.write(line.replace("\n", " ") + "\n")
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--emotion", type=str, required=True,
@@ -42,3 +42,6 @@ if __name__ == "__main__":
     save_lists(neu_texts, f"data/processed/{args.emotion}/{args.split}_neutral.txt")
 
     print(f"Saved {len(emo_texts)} '{args.emotion}' samples and {len(neu_texts)} neutral samples.")
+
+if __name__ == '__main__':
+    main()

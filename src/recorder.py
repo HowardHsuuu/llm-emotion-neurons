@@ -41,7 +41,7 @@ def extract_selected_layers(texts, model, tokenizer, batch_size, device, layer_i
 
     return collected  # [L_sel, N, D]
 
-if __name__ == "__main__":
+def main():
     p = argparse.ArgumentParser(description="Recorder: extract selected Transformer layers")
     p.add_argument("--emotion",    type=str, required=True)
     p.add_argument("--split",      type=str, default="train")
@@ -100,3 +100,6 @@ if __name__ == "__main__":
     neu_file = os.path.join(out_dir, f"{args.split}_neutral_layers.npy")
     np.save(neu_file, neu_arr)
     print(f"Saved neutral activations to {neu_file}, shape {neu_arr.shape}")
+
+if __name__ == '__main__':
+    main()
