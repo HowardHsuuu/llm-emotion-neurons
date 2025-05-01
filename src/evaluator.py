@@ -1,87 +1,76 @@
-import os
 import argparse
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-def add_steering_hook(model, layer_idx, steering_vector, device):
+def add_steering_hook(model, layer_idx, vec, alpha, device):
     try:
-        target = model.model.layers[layer_idx]
+        blk = model.model.layers[layer_idx-1]
     except AttributeError:
-        target = model.transformer.h[layer_idx]
-    def hook(module, inputs, output):
+        blk = model.transformer.h[layer_idx-1]
+    def hook(_, __, output):
         hidden = output[0] if isinstance(output, tuple) else output
-        print(f"Hidden state shape: {hidden.shape}, Steering vector shape: {steering_vector.shape}")
-        if hidden.shape[-1] != steering_vector.shape[-1]:
-            raise ValueError(f"Shape mismatch: hidden {hidden.shape} vs steering {steering_vector.shape}")
-        hidden[:, -1, :] += steering_vector.to(device)
-        return (hidden, output[1]) if isinstance(output, tuple) else hidden
-    return target.register_forward_hook(hook)
+        hidden[:, -1, :] += alpha * vec.to(device)
+        return None
+    return blk.register_forward_hook(hook)
 
 def generate_text(model, tokenizer, prompt, device, max_length):
-    print(f"Tokenizing prompt: {prompt}")
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    print(f"Input IDs shape: {inputs['input_ids'].shape}")
-    outputs = model.generate(
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(device)
+    out = model.generate(
         **inputs,
         max_length=max_length,
         do_sample=False,
-        return_dict_in_generate=True,
+        use_cache=False,
+        output_hidden_states=True,
+        return_dict_in_generate=True
     )
-    return tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+    return tokenizer.decode(out.sequences[0], skip_special_tokens=True)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", required=True)
-    parser.add_argument("--vector_path", required=True)
-    parser.add_argument("--layer", type=int, default=-1)
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--max_length", type=int, default=50)
-    parser.add_argument("prompts", nargs="+", help="One or more prompts to test")
-    args = parser.parse_args()
-
-    # Validate vector
-    try:
-        vec_np = np.load(args.vector_path)
-        print(f"Loaded vector shape: {vec_np.shape}, dtype: {vec_np.dtype}")
-        if np.any(np.isnan(vec_np)) or np.any(np.isinf(vec_np)):
-            print("Warning: Steering vector contains NaN or Inf values")
-        vec = torch.from_numpy(vec_np).float().to(args.device)
-    except Exception as e:
-        print(f"Error loading vector: {e}")
-        exit(1)
-
+    p = argparse.ArgumentParser(description="Evaluator with multi-layer steering")
+    p.add_argument("--model_name", required=True)
+    p.add_argument("--emotion_npy", required=True, help="train_emotion_layers.npy")
+    p.add_argument("--neutral_npy", required=True, help="train_neutral_layers.npy")
+    p.add_argument("--layers", type=str, default="all", help="Comma-separated 1-based indices or 'all'")
+    p.add_argument("--alpha", type=float, default=1.0)
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--max_length", type=int, default=60)
+    p.add_argument("prompts", nargs="+")
+    args = p.parse_args()
     device = torch.device(args.device)
-    print(f"Loading model: {args.model_name} on {device}")
+    emo_all = np.load(args.emotion_npy)   # [L_sel, N_em, D]
+    neu_all = np.load(args.neutral_npy)   # [L_sel, N_neu, D]
+    L_sel = emo_all.shape[0]
+
+    if args.layers.lower() == "all":
+        layer_idxs = list(range(1, L_sel+1))
+    else:
+        layer_idxs = [int(x) for x in args.layers.split(",")]
+
+    steering = {}
+    for l in layer_idxs:
+        mean_e = emo_all[l-1].mean(axis=0)
+        mean_n = neu_all[l-1].mean(axis=0)
+        steering[l] = torch.from_numpy(mean_e - mean_n).float()
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(args.model_name).to(device).eval()
-    if args.layer == -1:
-        try:
-            args.layer = len(model.model.layers) - 1
-        except AttributeError:
-            args.layer = len(model.transformer.h) - 1
-    print(f"Using layer: {args.layer}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name, output_hidden_states=True
+    ).to(device).eval()
 
     for prompt in args.prompts:
-        print("\n=== Prompt ===")
-        print(prompt)
-        # Baseline
-        try:
-            base_out = generate_text(model, tokenizer, prompt, device, args.max_length)
-            print("\n--- Baseline ---")
-            print(base_out)
-        except Exception as e:
-            print(f"Baseline generation failed: {e}")
-            continue
-        # Steered
-        try:
-            hook = add_steering_hook(model, args.layer, vec, device)
-            steer_out = generate_text(model, tokenizer, prompt, device, args.max_length)
-            print("\n+++ Steered +++")
-            print(steer_out)
-        except Exception as e:
-            print(f"Steered generation failed: {e}")
-        finally:
-            hook.remove()
+        print(f"\n=== Prompt ===\n{prompt}")
+
+        base = generate_text(model, tokenizer, prompt, device, args.max_length)
+        print(f"\n--- Baseline ---\n{base}")
+        handles = []
+        for l in layer_idxs:
+            handles.append(add_steering_hook(
+                model, l, steering[l], args.alpha, device
+            ))
+        steer = generate_text(model, tokenizer, prompt, device, args.max_length)
+        for h in handles:
+            h.remove()
+        print(f"\n+++ Steered (α={args.alpha}, layers={layer_idxs}) +++\n{steer}")
