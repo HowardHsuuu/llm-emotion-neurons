@@ -69,4 +69,22 @@ python src/evaluator_benchmark.py \
   --output_file tq_results.json
 ```
 
+## Some example results
+
+### emotion: anger, top 20
+
+* neuron:
+![alt text](img/image.png)
+![alt text](img/image-1.png)
+
+* generation test:
+(prompt: Tell me about yourself)
+```
+--- Baseline ---
+I'm a curious and creative person who loves to learn and explore new things. I enjoy trying new foods, traveling, and meeting new people. I'm also a bit of a bookworm and love getting lost in a good novel.
+
++++ Steered (α=0.8, layers=all) +++
+I'm a guy, 28, living in LA. I'm a wannabe actor, wannabe musician, wannabe... you know, wannabe somebody. I work at a video game store, selling games to idiots who think they're gonna be a pro gamer
+```
+
 
