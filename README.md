@@ -3,8 +3,8 @@
 1. choose any causal model (instruction tuned or not)
 2. choose an emotion (ex: anger)
 3. use texts in GoEmotion labeled that emotion and "neutral" and obtain last token's hidden states --> find possibly emotion related neurons
-4. average respectively and obtain the steering vector (difference matrix) by subtracting the two
-5-1. design or find a series of prompts and use a classifier to see if the model has more tendency to show that emotion
+4. average respectively and obtain the steering vector (difference matrix) by subtracting the two  
+5-1. design or find a series of prompts and use a classifier to see if the model has more tendency to show that emotion  
 5-2. use a benchmark, like truthfulQA(or a benchmark for non-instruction tuned model), to see if using that emotion's steering vector would improve performance
 
 ## Pipeline
